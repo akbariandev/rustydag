@@ -84,7 +84,9 @@ async fn main() {
             match event {
                 p2p::EventType::Init => {
                     let peers = p2p::get_list_peers(&swarm);
-                    swarm.behaviour_mut().app.genesis();
+                    swarm.behaviour_mut().app.general_genesis();
+                    swarm.behaviour_mut().app.ml_genesis();
+
 
                     info!("connected nodes: {}", peers.len());
                     if !peers.is_empty() {
@@ -111,8 +113,11 @@ async fn main() {
                         .publish(p2p::CHAIN_TOPIC.clone(), json.as_bytes());
                 }
                 p2p::EventType::Input(line) => match line.as_str() {
+
                     "ls p" => p2p::handle_print_peers(&swarm),
-                    cmd if cmd.starts_with("ls c") => p2p::handle_print_chain(&swarm),
+                    cmd if cmd.starts_with("ls c") => p2p::handle_print_general_chain(&swarm),
+                    cmd if cmd.starts_with("ls m") => p2p::handle_print_ml_chain(&swarm),
+                    cmd if cmd.starts_with("create m") => p2p::add_ml_block(&mut swarm,  ml::linear_regression::create_model()),
                     _ => error!("unknown command"),
                 },
             }

@@ -11,15 +11,18 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
+use crate::chain::block::MlBlock;
 
 pub static KEYS: Lazy<identity::Keypair> = Lazy::new(identity::Keypair::generate_ed25519);
 pub static PEER_ID: Lazy<PeerId> = Lazy::new(|| PeerId::from(KEYS.public()));
 pub static CHAIN_TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("chains"));
 pub static BLOCK_TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("blocks"));
+pub static ML_BLOCK_TOPIC: Lazy<Topic> = Lazy::new(|| Topic::new("ml_blocks"));
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChainResponse {
     pub blocks: Vec<Block>,
+    pub ml_blocks: Vec<MlBlock>,
     pub receiver: String,
 }
 
@@ -63,6 +66,7 @@ impl AppBehaviour {
         };
         behaviour.floodsub.subscribe(CHAIN_TOPIC.clone());
         behaviour.floodsub.subscribe(BLOCK_TOPIC.clone());
+        behaviour.floodsub.subscribe(ML_BLOCK_TOPIC.clone());
 
         behaviour
     }
@@ -76,8 +80,10 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for AppBehaviour {
                 if resp.receiver == PEER_ID.to_string() {
                     info!("Response from {}:", msg.source);
                     resp.blocks.iter().for_each(|r| info!("{:?}", r));
+                    resp.ml_blocks.iter().for_each(|r| info!("{:?}", r));
 
-                    self.app.blocks = self.app.choose_chain(self.app.blocks.clone(), resp.blocks);
+                    self.app.blocks = self.app.choose_general_chain(self.app.blocks.clone(), resp.blocks);
+                    self.app.ml_blocks = self.app.choose_ml_chain(self.app.ml_blocks.clone(), resp.ml_blocks);
                 }
             } else if let Ok(resp) = serde_json::from_slice::<LocalChainRequest>(&msg.data) {
                 info!("sending local chain to {}", msg.source.to_string());
@@ -85,14 +91,18 @@ impl NetworkBehaviourEventProcess<FloodsubEvent> for AppBehaviour {
                 if PEER_ID.to_string() == peer_id {
                     if let Err(e) = self.response_sender.send(ChainResponse {
                         blocks: self.app.blocks.clone(),
+                        ml_blocks: self.app.ml_blocks.clone(),
                         receiver: msg.source.to_string(),
                     }) {
                         error!("error sending response via channel, {}", e);
                     }
                 }
             } else if let Ok(block) = serde_json::from_slice::<Block>(&msg.data) {
-                info!("received new block from {}", msg.source.to_string());
-                self.app.try_add_block(block);
+                info!("received new general block from {}", msg.source.to_string());
+                self.app.try_add_general_block(block);
+            }else if let Ok(block) = serde_json::from_slice::<MlBlock>(&msg.data) {
+                info!("received new ML block from {}", msg.source.to_string());
+                self.app.try_add_ml_block(block);
             }
         }
     }
@@ -132,43 +142,28 @@ pub fn handle_print_peers(swarm: &Swarm<AppBehaviour>) {
     peers.iter().for_each(|p| info!("{}", p));
 }
 
-pub fn handle_print_chain(swarm: &Swarm<AppBehaviour>) {
-    info!("Local Blockchain:");
+pub fn handle_print_general_chain(swarm: &Swarm<AppBehaviour>) {
+    info!("Local General Chain: :");
     let pretty_json =
         serde_json::to_string_pretty(&swarm.behaviour().app.blocks).expect("can jsonify blocks");
     info!("{}", pretty_json);
 }
 
-pub fn handle_create_block(cmd: &str, swarm: &mut Swarm<AppBehaviour>) {
-    if let Some(data) = cmd.strip_prefix("create b") {
-        let behaviour = swarm.behaviour_mut();
-        let latest_block = behaviour
-            .app
-            .blocks
-            .last()
-            .expect("there is at least one block");
-        let block = Block::new(
-            latest_block.id + 1,
-            latest_block.hash.clone(),
-            data.to_owned(),
-        );
-        let json = serde_json::to_string(&block).expect("can jsonify request");
-        behaviour.app.blocks.push(block);
-        info!("broadcasting new block");
-        behaviour
-            .floodsub
-            .publish(BLOCK_TOPIC.clone(), json.as_bytes());
-    }
+pub fn handle_print_ml_chain(swarm: &Swarm<AppBehaviour>) {
+    info!("Local ML chain: ");
+    let pretty_json =
+        serde_json::to_string_pretty(&swarm.behaviour().app.ml_blocks).expect("can jsonify ml blocks");
+    info!("{}", pretty_json);
 }
 
-pub fn add_block(swarm: &mut Swarm<AppBehaviour>, data: String) {
+pub fn add_general_block(swarm: &mut Swarm<AppBehaviour>, data: String) {
     let behaviour = swarm.behaviour_mut();
     let latest_block = behaviour
         .app
         .blocks
         .last()
         .expect("there is at least one block");
-    let block = Block::new(
+    let block = Block::new_general_block(
         latest_block.id + 1,
         latest_block.hash.clone(),
         data.to_owned(),
@@ -179,5 +174,25 @@ pub fn add_block(swarm: &mut Swarm<AppBehaviour>, data: String) {
     behaviour
         .floodsub
         .publish(BLOCK_TOPIC.clone(), json.as_bytes());
+}
+
+pub fn add_ml_block(swarm: &mut Swarm<AppBehaviour>,  data: String) {
+    let behaviour = swarm.behaviour_mut();
+    let latest_block = behaviour
+        .app
+        .ml_blocks
+        .last()
+        .expect("there is at least one block");
+    let block = MlBlock::new_ml_block(
+        latest_block.id + 1,
+        latest_block.hash.clone(),
+        data.to_owned(),
+    );
+    let json = serde_json::to_string(&block).expect("can jsonify request");
+    behaviour.app.ml_blocks.push(block);
+    info!("broadcasting new ML block");
+    behaviour
+        .floodsub
+        .publish(ML_BLOCK_TOPIC.clone(), json.as_bytes());
 }
 
